@@ -11,6 +11,10 @@
 #include <vtkRenderer.h>
 #include <vtkStructuredPoints.h>
 #include <vtkDataSetMapper.h>
+#include <vtkLookupTable.h>
+#include <vtkThreshold.h>
+#include <vtkShrinkFilter.h>
+#include <vtkUnstructuredGrid.h>
 int main(int, char*[])
 {
   vtkNew<vtkNamedColors> colors;
@@ -22,41 +26,48 @@ int main(int, char*[])
   iren->SetRenderWindow(renWin);
 
   vtkNew<vtkStructuredPoints> vol;
-  double sizeCube[2];
-  sizeCube = (20, 20, 20);
-  vol->SetDimensions(sizeCube);
+  int sizeCube = 101;
+  vol->SetDimensions(sizeCube, sizeCube, sizeCube);
   vol->SetOrigin(-0.5, -0.5, -0.5);
-  auto sp = 1.0 / 25.0;
+  auto sp = 1.0 / float(sizeCube - 1);
   vol->SetSpacing(sp, sp, sp);
 
   vtkNew<vtkDoubleArray> scalars;
   scalars->SetNumberOfComponents(1);
-  scalars->SetNumberOfTuples(26 * 26 * 26);
-  for (auto k = 0; k < 26; k++)
+  scalars->SetNumberOfTuples(sizeCube * sizeCube * sizeCube);
+  for (auto k = 0; k < sizeCube; k++)
   {
-    auto z = -0.5 + k * sp;
-    auto kOffset = k * 26 * 26;
-    for (auto j = 0; j < 26; j++)
+    auto z = k * sp;
+    auto kOffset = k * sizeCube * sizeCube;
+    for (auto j = 0; j < sizeCube; j++)
     {
       auto y = -0.5 + j * sp;
-      auto jOffset = j * 26;
-      for (auto i = 0; i < 26; i++)
+      auto jOffset = j * sizeCube;
+      for (auto i = 0; i < sizeCube; i++)
       {
         auto x = -0.5 + i * sp;
         auto s = x * x + y * y + z * z - (0.4 * 0.4);
         auto offset = i + jOffset + kOffset;
-        scalars->InsertTuple(offset, &s);
+        auto value = z - (sinf(i / 5.0) + cosf(j / 5.0)) / 2.0f;
+        scalars->InsertTuple(offset, &value);
       }
     }
   }
   vol->GetPointData()->SetScalars(scalars);
 
-  //vtkNew<vtkContourFilter> contour;
-  //contour->SetInputData(vol);
-  //contour->SetValue(0, 0.0);
+
+  // Threshold
+  vtkNew<vtkThreshold> threshold;
+  threshold->SetInputData(vol);
+  // Criterion is cells whose scalars are greater or equal to threshold.
+  threshold->SetLowerThreshold(0.3);
+  threshold->SetThresholdFunction(vtkThreshold::THRESHOLD_LOWER);
+  threshold->Update();
+
+
 
   vtkNew<vtkDataSetMapper> volMapper;
-  volMapper->SetInputData(vol);
+  volMapper->SetInputConnection(threshold->GetOutputPort());
   volMapper->ScalarVisibilityOn();
   vtkNew<vtkActor> volActor;
   volActor->SetMapper(volMapper);
