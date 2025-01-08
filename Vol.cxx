@@ -44,6 +44,11 @@
 #include <QVBoxLayout>
 #include <vtkCamera.h>
 #include <qtimer.h>
+#include <vtkCellPicker.h>
+#include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkWarpScalar.h>
+#include <vtkGeometryFilter.h>
+
 class VolumeRenderer {
 public:
     VolumeRenderer(vtkRenderer* renderer, vtkStructuredPoints* vol )
@@ -99,6 +104,98 @@ public:
         time += deltaTime; // Zwiększanie czasu
         updateVolume();
     }
+    void pickPoint(int x, int y) {
+        vtkNew<vtkCellPicker> picker;
+        picker->SetTolerance(0.005);
+
+        if (picker->Pick(x, y, 0, renderer)) {
+            double pickedPosition[3];
+            picker->GetPickPosition(pickedPosition);
+
+            vtkIdType pointId = vol->FindPoint(pickedPosition);
+            if (pointId != -1) {
+                std::cout << "Picked Point ID: " << pointId << std::endl;
+                std::cout << "Picked Position: (" << pickedPosition[0] << ", "
+                    << pickedPosition[1] << ", " << pickedPosition[2] << ")" << std::endl;
+
+                //changePointScalar(pointId, 100.0); // Nowa wartość skalarna
+                increasePointHeight(pointId, -10.0);
+                //updateVoxels();
+                //applyWarpScalar(); // Zastosuj deformację
+                // Pobierz wartość skalaru dla wybranego punktu
+                vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+                if (scalars) {
+                    double value = scalars->GetTuple1(pointId);
+                    std::cout << "Scalar Value at Picked Point: " << value << std::endl;
+                }
+            }
+            else {
+                std::cout << "No valid point found at picked position." << std::endl;
+            }
+        }
+        else {
+            std::cout << "No point picked." << std::endl;
+        }
+    }
+
+    void changePointScalar(vtkIdType pointId, double newValue) {
+        vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+        if (scalars && pointId != -1) {
+            scalars->SetTuple1(pointId, newValue); // Zmiana wartości skalarnej
+            vol->Modified(); 
+            renderer->GetRenderWindow()->Render(); 
+        }
+    }
+    void updateVoxels() {
+        vtkNew<vtkThreshold> threshold;
+        threshold->SetInputData(vol);
+        threshold->SetLowerThreshold(0.55);
+        threshold->SetThresholdFunction(vtkThreshold::THRESHOLD_LOWER);
+        threshold->Update();
+
+        vtkNew<vtkDataSetMapper> mapper;
+        mapper->SetInputConnection(threshold->GetOutputPort());
+        mapper->ScalarVisibilityOn();
+        vtkNew<vtkActor> actor;
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetColor(1.0, 1.0, 1.0); // Ustaw kolor biały (lub dynamiczny)
+        actor->GetProperty()->EdgeVisibilityOn();
+        actor->GetProperty()->SetInterpolationToFlat();
+        actor->GetProperty()->SetAmbient(1.0);  // Ustawienie maksymalnej jasności materiału (1.0 = maksymalna jasność)
+        actor->GetProperty()->SetDiffuse(0.2);  // Zmniejszenie odbicia rozproszonego
+        actor->GetProperty()->SetSpecular(0.1);  // Można dodać połysk (dla efektu refleksji)
+        actor->GetProperty()->SetSpecularPower(1.0);  // Zwiększenie refleksów świetlnych
+        renderer->RemoveAllViewProps(); // Usuń poprzednie
+        renderer->AddActor(actor);
+        renderer->GetRenderWindow()->Render();
+    }
+
+    void increasePointHeight(vtkIdType pointId, double increment) {
+        vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+        if (scalars && pointId != -1) {
+            double currentValue = scalars->GetTuple1(pointId);
+            double newValue = currentValue + increment; // Zwiększenie wysokości
+            scalars->SetTuple1(pointId, newValue);      
+            vol->Modified();                            
+            renderer->GetRenderWindow()->Render();      
+        }
+    }
+    void applyWarpScalar() {
+        vtkNew<vtkWarpScalar> warp;
+        warp->SetInputData(vol);
+        warp->SetScaleFactor(0.0); // Skala deformacji
+        warp->Update();
+
+        vtkNew<vtkDataSetMapper> mapper;
+        mapper->SetInputConnection(warp->GetOutputPort());
+
+        vtkNew<vtkActor> actor;
+        actor->SetMapper(mapper);
+
+        renderer->RemoveAllViewProps(); // Usuń poprzednie obiekty
+        renderer->AddActor(actor);
+        renderer->GetRenderWindow()->Render();
+    }
 
 private:
     vtkRenderer* renderer;
@@ -118,7 +215,6 @@ void rotateCameraRight(vtkNew<vtkCamera>& camera, vtkRenderer* renderer) {
     camera->SetPosition(position);
     renderer->GetActiveCamera()->Modified();  // Aktualizowanie widoku
 }
-
 // Funkcja obracania kamery w lewo
 void rotateCameraLeft(vtkNew<vtkCamera>& camera, vtkRenderer* renderer) {
     double* position = camera->GetPosition();
@@ -129,6 +225,30 @@ void rotateCameraLeft(vtkNew<vtkCamera>& camera, vtkRenderer* renderer) {
     camera->SetPosition(position);
     renderer->GetActiveCamera()->Modified();  // Aktualizowanie widoku
 }
+
+class MouseInteractorStyle : public vtkInteractorStyleTrackballCamera {
+public:
+    static MouseInteractorStyle* New();
+    vtkTypeMacro(MouseInteractorStyle, vtkInteractorStyleTrackballCamera);
+
+    void OnRightButtonDown() override {
+        int* clickPos = this->GetInteractor()->GetEventPosition();
+
+        if (volumeRenderer) {
+            volumeRenderer->pickPoint(clickPos[0], clickPos[1]);
+        }
+
+        vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
+    }
+
+    void setVolumeRenderer(VolumeRenderer* renderer) {
+        volumeRenderer = renderer;
+    }
+
+private:
+    VolumeRenderer* volumeRenderer = nullptr;
+};
+vtkStandardNewMacro(MouseInteractorStyle);
 int main(int argc, char* argv[])
 {
     QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
@@ -181,6 +301,9 @@ int main(int argc, char* argv[])
     QSlider sizeCubeSlider(Qt::Horizontal);
     sizeCubeSlider.setRange(3, 101);
     sizeCubeSlider.setValue(51);
+
+
+
 
     QLabel label_freq_x;
     label_freq_x.setText("Frequency X");
@@ -282,6 +405,13 @@ int main(int argc, char* argv[])
 
     
     VolumeRenderer volRenderer(renderer, vol);
+    vtkNew<vtkRenderWindowInteractor> interactor;
+    vtkNew<MouseInteractorStyle> style;
+
+    style->setVolumeRenderer(&volRenderer); // Ustaw instancję VolumeRenderer
+    interactor->SetInteractorStyle(style);
+
+
 	volRenderer.updateVolume();
     QObject::connect(&frequencyXSlider, &QSlider::valueChanged, [&volRenderer](int value) {
         float frequencyX = (value / 10.0f ) + 10.0f;
@@ -323,8 +453,11 @@ int main(int argc, char* argv[])
         });
     timer.start(16);  // 60 fps (1000 ms / 60 ≈ 16 ms na klatkę)
 
-
     mainWindow.show();
+    renderer->GetRenderWindow()->SetInteractor(interactor);
+    interactor->Initialize();
+    interactor->Start();
+    
 
     return app.exec();
 }
