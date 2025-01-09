@@ -47,8 +47,9 @@
 #include <vtkCellPicker.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkWarpScalar.h>
-#include <vtkGeometryFilter.h>
-
+#include <vtkSmartVolumeMapper.h>
+#include <vtkShortArray.h>
+#include <vtkCharArray.h>
 class VolumeRenderer {
 public:
     VolumeRenderer(vtkRenderer* renderer, vtkStructuredPoints* vol )
@@ -57,20 +58,20 @@ public:
     bool isPlaying = false;
 
     void updateVolume() {
-        vtkNew<vtkDoubleArray> scalars;
+        vtkNew<vtkCharArray> scalars;
         int sizeCube = vol->GetDimensions()[0];
         auto sp = vol->GetSpacing()[0];
         scalars->SetNumberOfComponents(1);
         scalars->SetNumberOfTuples(sizeCube * sizeCube * sizeCube);
-
+        
         for (auto k = 0; k < sizeCube; k++) {
-            auto z = k * sp;
+            auto z = 0.5 + k * sp;
             auto kOffset = k * sizeCube * sizeCube;
             for (auto j = 0; j < sizeCube; j++) {
-                auto y = -0.5 + j * sp;
+                auto y = 0.5 + j * sp;
                 auto jOffset = j * sizeCube;
                 for (auto i = 0; i < sizeCube; i++) {
-                    auto x = -0.5 + i * sp; 
+                    auto x = 0.5 + i * sp; 
                     auto value = z - ( sinf(i / ((sizeCube - 1) / frequencyX) + time) * cosf(j / ((sizeCube - 1) / frequencyY) + time)) / ((sizeCube - 1) / amplitude) ;
                     auto offset = i + jOffset + kOffset;
                     scalars->InsertTuple(offset, &value);
@@ -259,9 +260,10 @@ int main(int argc, char* argv[])
     QMainWindow mainWindow;
     mainWindow.resize(900, 900);
     vtkNew<vtkNamedColors> colors;
-    vtkNew<vtkDataSetMapper> volMapper;
+    vtkNew<vtkSmartVolumeMapper> volMapper;
     vtkNew<vtkRenderer> renderer;
 
+    volMapper->SetRequestedRenderModeToGPU();
     vtkNew<vtkCamera> camera;
     camera->SetPosition(2.0, -2.0, 2.0);  // Ustawienie kamery na pozycji (0, -5, 5)
     camera->SetFocalPoint(0.0, 0.0, 0.0); // Skierowanie kamery na środek sceny (0, 0, 0)
@@ -299,7 +301,7 @@ int main(int argc, char* argv[])
     amplitudeSlider.setValue(0);
 
     QSlider sizeCubeSlider(Qt::Horizontal);
-    sizeCubeSlider.setRange(3, 101);
+    sizeCubeSlider.setRange(3, 256);
     sizeCubeSlider.setValue(51);
 
 
@@ -359,7 +361,7 @@ int main(int argc, char* argv[])
     auto sp = 1.0 / float(sizeCube - 1) ;
     vol->SetSpacing(sp, sp, sp);
 
-    vtkNew<vtkDoubleArray> scalars;
+    vtkNew<vtkCharArray> scalars;
     scalars->SetNumberOfComponents(1);
     scalars->SetNumberOfTuples(sizeCube * sizeCube * sizeCube);
     
@@ -381,22 +383,26 @@ int main(int argc, char* argv[])
     double range[2];
     vol->GetScalarRange(range);
     
-    volMapper->ScalarVisibilityOn();
+    //volMapper->ScalarVisibilityOn();
     lut->SetTableRange(range[0], range[1]);
     lut->SetNumberOfTableValues(256);
 
     lut->Build();
     // Ustawienie kolorów w przestrzeni HLS
-    volMapper->SetLookupTable(lut);
+    //volMapper->SetLookupTable(lut);
 
     vtkNew<vtkActor> volActor;
-    volActor->SetMapper(volMapper);
-    volActor->GetProperty()->EdgeVisibilityOn();
-    volActor->GetProperty()->SetInterpolationToFlat();
-    volActor->GetProperty()->SetAmbient(1.0);  // Ustawienie maksymalnej jasności materiału (1.0 = maksymalna jasność)
-    volActor->GetProperty()->SetDiffuse(0.2);  // Zmniejszenie odbicia rozproszonego
-    volActor->GetProperty()->SetSpecular(0.1);  // Można dodać połysk (dla efektu refleksji)
-    volActor->GetProperty()->SetSpecularPower(1.0);  // Zwiększenie refleksów świetlnych
+    vtkNew<vtkVolume> volume;
+    vtkNew<vtkVolumeProperty> volumeProp;
+
+
+    //volActor->SetMapper(volMapper);
+    volActor->GetProperty()->EdgeVisibilityOff();
+    //volActor->GetProperty()->SetInterpolationToFlat();
+    //volActor->GetProperty()->SetAmbient(1.0);  // Ustawienie maksymalnej jasności materiału (1.0 = maksymalna jasność)
+    //volActor->GetProperty()->SetDiffuse(0.2);  // Zmniejszenie odbicia rozproszonego
+    //volActor->GetProperty()->SetSpecular(0.1);  // Można dodać połysk (dla efektu refleksji)
+    //volActor->GetProperty()->SetSpecularPower(1.0);  // Zwiększenie refleksów świetlnych
     volActor->GetProperty()->SetColor(colors->GetColor3d("Salmon").GetData());
 
     renderer->AddActor(volActor);
