@@ -337,7 +337,6 @@ int main(int argc, char* argv[])
     vtkNew<vtkRenderer> renderer;
     setupLookup();
 
-    volMapper->SetRequestedRenderModeToGPU();
     vtkNew<vtkCamera> camera;
     camera->SetPosition(2.0, -2.0, 2.0);  // Ustawienie kamery na pozycji (0, -5, 5)
     camera->SetFocalPoint(0.0, 0.0, 0.0); // Skierowanie kamery na środek sceny (0, 0, 0)
