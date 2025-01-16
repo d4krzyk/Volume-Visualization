@@ -26,81 +26,153 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QVTKOpenGLNativeWidget.h>
-#include <vtkActor.h>
-#include <vtkDataSetMapper.h>
-#include <vtkDoubleArray.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkPointData.h>
-#include <vtkProperty.h>
-#include <vtkRenderer.h>
 #include <vtkSphereSource.h>
-#include <QApplication>
-#include <QDockWidget>
 #include <QGridLayout>
-#include <QLabel>
-#include <QMainWindow>
-#include <QPointer>
-#include <QPushButton>
-#include <QVBoxLayout>
 #include <vtkCamera.h>
 #include <qtimer.h>
 #include <vtkCellPicker.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkWarpScalar.h>
 #include <vtkGeometryFilter.h>
+#include <vtkFloatArray.h>
+#include <vtkGenericDataArray.h>
+#include <vtkShortArray.h>
+#include <vtkOpenGLGPUVolumeRayCastMapper.h>
+#include <vtkVolumeProperty.h>
+#include <vtkPiecewiseFunction.h>
+#include <vtkOutlineFilter.h>
+#include <QThreadPool>
+#include <cmath>
+#include <chrono>
+#include <vtkCharArray.h>
+
+#define M_PI 3.14159265358979323846
+
+static int sizeCube = 256;
+constexpr std::size_t LOOKUP_SIZE = 4096;
+static float sp = 1.0 / float(sizeCube - 1);
+
+float sinLookup[LOOKUP_SIZE];
+float cosLookup[LOOKUP_SIZE];
+
+float* zLookup = new float[sizeCube];
+float* yLookup = new float[sizeCube];
+float* xLookup = new float[sizeCube];
+
+
+void setupLookup() {
+    for (int i = 0; i < LOOKUP_SIZE; i++) {
+        sinLookup[i] = sinf(i / float(LOOKUP_SIZE) * 2 * M_PI);
+        cosLookup[i] = cosf(i / float(LOOKUP_SIZE) * 2 * M_PI);
+    }
+    for (int i = 0; i < sizeCube; i++) {
+        zLookup[i] = i * sp;
+        yLookup[i] = -0.5 + i * sp;
+        xLookup[i] = -0.5 + i * sp;
+    }
+}
+float lightX(int i) {
+	return xLookup[i];
+}
+float lightY(int i) {
+    return yLookup[i];
+}
+float lightZ(int i) {
+    return zLookup[i];
+}
+float lightSin(float angle) {
+    return sinLookup[int(angle / 2 * M_PI * LOOKUP_SIZE/4) % LOOKUP_SIZE];
+}
+
+float lightCos(float angle) {
+    return cosLookup[int(angle / 2 * M_PI * LOOKUP_SIZE/4) % LOOKUP_SIZE];
+}
+
+
+#define BENCHMARK
+
+void benchmark(std::function<void()> f) {
+    auto start = std::chrono::high_resolution_clock::now();
+    f();
+    auto stop = std::chrono::high_resolution_clock::now();
+
+#ifdef BENCHMARK
+	auto currentTime = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
+    if (duration >= 1) {
+        std::cout << "FPS: " << int((16.0 / duration) * 100) << std::endl;
+        start = stop;
+    }
+#endif
+}
+
 
 class VolumeRenderer {
 public:
-    VolumeRenderer(vtkRenderer* renderer, vtkStructuredPoints* vol )
-        : renderer(renderer), vol(vol), frequencyX(10.0f), frequencyY(10.0f), amplitude(10.0f) {}
+    VolumeRenderer(vtkRenderer* renderer, vtkStructuredPoints* volPoints )
+        : renderer(renderer), volPoints(volPoints), frequencyX(10.0f), frequencyY(10.0f), amplitude(10.0f) {}
 
     bool isPlaying = false;
 
     void updateVolume() {
-        vtkNew<vtkDoubleArray> scalars;
-        int sizeCube = vol->GetDimensions()[0];
-        auto sp = vol->GetSpacing()[0];
-        scalars->SetNumberOfComponents(1);
-        scalars->SetNumberOfTuples(sizeCube * sizeCube * sizeCube);
+        QThreadPool pool;
 
-        for (auto k = 0; k < sizeCube; k++) {
-            auto z = k * sp;
-            auto kOffset = k * sizeCube * sizeCube;
-            for (auto j = 0; j < sizeCube; j++) {
-                auto y = -0.5 + j * sp;
-                auto jOffset = j * sizeCube;
-                for (auto i = 0; i < sizeCube; i++) {
-                    auto x = -0.5 + i * sp; 
-                    auto value = z - ( sinf(i / ((sizeCube - 1) / frequencyX) + time) * cosf(j / ((sizeCube - 1) / frequencyY) + time)) / ((sizeCube - 1) / amplitude) ;
-                    auto offset = i + jOffset + kOffset;
-                    scalars->InsertTuple(offset, &value);
-                }
-            }
+        float* begin = (float*)volPoints->GetPointData()->GetScalars()->GetVoidPointer(0);
+        auto scalars = volPoints->GetPointData()->GetScalars();
+     
+        std::vector<float> sinValues(sizeCube);
+        std::vector<float> cosValues(sizeCube);
+        for (int i = 0; i < sizeCube; ++i) {
+            sinValues[i] = lightSin(i / ((sizeCube - 1) / frequencyX) + time);
+            cosValues[i] = lightCos(i / ((sizeCube - 1) / frequencyY) + time);
         }
-        vol->GetPointData()->SetScalars(scalars);
+        for (int k = 0; k < sizeCube; k++) {
+			float z = lightZ(k);
+            int kOffset = k * sizeCube * sizeCube;
+			pool.start([this, z, kOffset, begin, &sinValues, &cosValues]() {
+				for (int j = 0; j < sizeCube; j++) {
+					float y = lightY(j);
+					int jOffset = j * sizeCube;
+					for (int i = 0; i < sizeCube; i++) {
+						float x = lightX(i);
+                        float value = z - (sinValues[i] * cosValues[j] / ((sizeCube - 1) / amplitude));
+						//float value = z - (lightSin(i / ((sizeCube - 1) / frequencyX) + time) * lightCos(j / ((sizeCube - 1) / frequencyY ) + time) / ((sizeCube - 1) / amplitude));
+						int offset = i + jOffset + kOffset;
+                        begin[offset] = value;
+                        //scalars->InsertTuple(offset, &value);
+					}
+				}
+				
+				});
+        }
+        while (pool.activeThreadCount() > 0);
+
+        volPoints->Modified();
+        //volPoints->GetPointData()->SetScalars(scalars);
         renderer->GetRenderWindow()->Render();
         
     }
 
-    void setFrequencyX(double freqx) {
+    void setFrequencyX(float freqx) {
         frequencyX = freqx;
         updateVolume();
     }
-    void setFrequencyY(double freqy) {
+    void setFrequencyY(float freqy) {
         frequencyY = freqy;
         updateVolume();
     }
-    void setAmplitude(double amp) {
+    void setAmplitude(float amp) {
         amplitude = amp;
         updateVolume();
     }
 	void setSizeCube(int size) {
-        vol->SetDimensions(size, size, size);
+        volPoints->SetDimensions(size, size, size);
         auto sp = 1.0 / float(size - 1);
-        vol->SetSpacing(sp, sp, sp);
+        volPoints->SetSpacing(sp, sp, sp);
 		updateVolume();
 	}
-    void updateTime(double deltaTime) {
+    void updateTime(float deltaTime) {
         time += deltaTime; // Zwiększanie czasu
         updateVolume();
     }
@@ -112,7 +184,7 @@ public:
             double pickedPosition[3];
             picker->GetPickPosition(pickedPosition);
 
-            vtkIdType pointId = vol->FindPoint(pickedPosition);
+            vtkIdType pointId = volPoints->FindPoint(pickedPosition);
             if (pointId != -1) {
                 std::cout << "Picked Point ID: " << pointId << std::endl;
                 std::cout << "Picked Position: (" << pickedPosition[0] << ", "
@@ -123,7 +195,7 @@ public:
                 //updateVoxels();
                 //applyWarpScalar(); // Zastosuj deformację
                 // Pobierz wartość skalaru dla wybranego punktu
-                vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+                vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
                 if (scalars) {
                     double value = scalars->GetTuple1(pointId);
                     std::cout << "Scalar Value at Picked Point: " << value << std::endl;
@@ -139,16 +211,16 @@ public:
     }
 
     void changePointScalar(vtkIdType pointId, double newValue) {
-        vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+        vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
         if (scalars && pointId != -1) {
             scalars->SetTuple1(pointId, newValue); // Zmiana wartości skalarnej
-            vol->Modified(); 
+            volPoints->Modified();
             renderer->GetRenderWindow()->Render(); 
         }
     }
     void updateVoxels() {
         vtkNew<vtkThreshold> threshold;
-        threshold->SetInputData(vol);
+        threshold->SetInputData(volPoints);
         threshold->SetLowerThreshold(0.55);
         threshold->SetThresholdFunction(vtkThreshold::THRESHOLD_LOWER);
         threshold->Update();
@@ -171,18 +243,18 @@ public:
     }
 
     void increasePointHeight(vtkIdType pointId, double increment) {
-        vtkDataArray* scalars = vol->GetPointData()->GetScalars();
+        vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
         if (scalars && pointId != -1) {
             double currentValue = scalars->GetTuple1(pointId);
             double newValue = currentValue + increment; // Zwiększenie wysokości
             scalars->SetTuple1(pointId, newValue);      
-            vol->Modified();                            
+            volPoints->Modified();
             renderer->GetRenderWindow()->Render();      
         }
     }
     void applyWarpScalar() {
         vtkNew<vtkWarpScalar> warp;
-        warp->SetInputData(vol);
+        warp->SetInputData(volPoints);
         warp->SetScaleFactor(0.0); // Skala deformacji
         warp->Update();
 
@@ -199,12 +271,12 @@ public:
 
 private:
     vtkRenderer* renderer;
-    vtkStructuredPoints* vol;
-    double frequencyX;
-    double frequencyY;
-    double amplitude;
+    vtkStructuredPoints* volPoints;
+    float frequencyX;
+    float frequencyY;
+    float amplitude;
 	
-    double time; // Czas, który będzie animował falę
+    float time; // Czas, który będzie animował falę
 };
 void rotateCameraRight(vtkNew<vtkCamera>& camera, vtkRenderer* renderer) {
     double* position = camera->GetPosition();
@@ -259,8 +331,11 @@ int main(int argc, char* argv[])
     QMainWindow mainWindow;
     mainWindow.resize(900, 900);
     vtkNew<vtkNamedColors> colors;
-    vtkNew<vtkDataSetMapper> volMapper;
+    //vtkNew<vtkDataSetMapper> volMapper;
+    vtkNew<vtkOpenGLGPUVolumeRayCastMapper> volMapper;
+    vtkNew<vtkVolumeProperty> volProperty;
     vtkNew<vtkRenderer> renderer;
+    setupLookup();
 
     vtkNew<vtkCamera> camera;
     camera->SetPosition(2.0, -2.0, 2.0);  // Ustawienie kamery na pozycji (0, -5, 5)
@@ -295,12 +370,12 @@ int main(int argc, char* argv[])
     frequencyYSlider.setValue(0);
 
     QSlider amplitudeSlider(Qt::Horizontal);
-    amplitudeSlider.setRange(-100, 100);
+    amplitudeSlider.setRange(-1000, 1000);
     amplitudeSlider.setValue(0);
 
     QSlider sizeCubeSlider(Qt::Horizontal);
-    sizeCubeSlider.setRange(3, 101);
-    sizeCubeSlider.setValue(51);
+    sizeCubeSlider.setRange(3, 256);
+    sizeCubeSlider.setValue(256);
 
 
 
@@ -319,8 +394,8 @@ int main(int argc, char* argv[])
     sliderLayout->addWidget(&amplitudeSlider);
     QLabel label_SizeCube;
     label_SizeCube.setText("Cube Size");
-    sliderLayout->addWidget(&label_SizeCube);
-    sliderLayout->addWidget(&sizeCubeSlider);
+    //sliderLayout->addWidget(&label_SizeCube);
+    //sliderLayout->addWidget(&sizeCubeSlider);
     label_freq_x.setAlignment(Qt::AlignCenter);
     label_freq_y.setAlignment(Qt::AlignCenter);
     label_Amp.setAlignment(Qt::AlignCenter);
@@ -352,59 +427,68 @@ int main(int argc, char* argv[])
     vtkNew<vtkGenericOpenGLRenderWindow> window;
     vtkRenderWidget->setRenderWindow(window.Get());
 
-    vtkNew<vtkStructuredPoints> vol;
-    int sizeCube = 51;
-    vol->SetDimensions(sizeCube, sizeCube, sizeCube);
-    vol->SetOrigin(-0.5, -0.5, -0.5);
-    auto sp = 1.0 / float(sizeCube - 1) ;
-    vol->SetSpacing(sp, sp, sp);
+    vtkNew<vtkStructuredPoints> volPoints;
 
-    vtkNew<vtkDoubleArray> scalars;
+    volPoints->SetDimensions(sizeCube, sizeCube, sizeCube);
+    volPoints->SetOrigin(-0.5, -0.5, -0.5);
+
+    volPoints->SetSpacing(sp, sp, sp);
+
+    vtkNew<vtkFloatArray> scalars;
     scalars->SetNumberOfComponents(1);
     scalars->SetNumberOfTuples(sizeCube * sizeCube * sizeCube);
     
-    vol->GetPointData()->SetScalars(scalars);
+    volPoints->GetPointData()->SetScalars(scalars);
 
-    // Threshold
-    vtkNew<vtkThreshold> threshold;
-    threshold->SetInputData(vol);
-    // Criterion is cells whose scalars are greater or equal to threshold.
-    threshold->SetLowerThreshold(0.55);
-    threshold->SetThresholdFunction(vtkThreshold::THRESHOLD_LOWER);
-    threshold->Update();
-
-
-    volMapper->SetInputConnection(threshold->GetOutputPort());
-
-    //// Dopasowanie zakresu kolorów do wartości z
-    vtkSmartPointer<vtkLookupTable> lut = vtkSmartPointer<vtkLookupTable>::New();
-    double range[2];
-    vol->GetScalarRange(range);
+    volMapper->SetInputData(volPoints);
     
-    volMapper->ScalarVisibilityOn();
-    lut->SetTableRange(range[0], range[1]);
-    lut->SetNumberOfTableValues(256);
+    vtkNew<vtkPiecewiseFunction> opacityTransferFunction;
+    opacityTransferFunction->AddPoint(0.5, 1.0);
+    opacityTransferFunction->AddPoint(0.51, 0.0);
+	vtkSmartPointer<vtkColorTransferFunction> colorTransferFunction = vtkSmartPointer<vtkColorTransferFunction>::New();
+	colorTransferFunction->AddRGBPoint(0.1, 0.45, 0.10, 0.0);
+	colorTransferFunction->AddRGBPoint(0.8, 0.2, 0.35, 0.0);
+	colorTransferFunction->AddRGBPoint(0.4, 0.7, 0.6, 1.0);
 
-    lut->Build();
-    // Ustawienie kolorów w przestrzeni HLS
-    volMapper->SetLookupTable(lut);
+    volProperty->SetColor(colorTransferFunction);
+    volProperty->SetScalarOpacity(opacityTransferFunction);
+    volProperty->SetInterpolationTypeToLinear();
+    volProperty->ShadeOn();
+    volProperty->SetAmbient(0.4);
+    volProperty->SetDiffuse(0.6);
+    volProperty->SetSpecular(0.2);
+    volProperty->SetSpecularPower(10.0);
 
-    vtkNew<vtkActor> volActor;
-    volActor->SetMapper(volMapper);
-    volActor->GetProperty()->EdgeVisibilityOn();
-    volActor->GetProperty()->SetInterpolationToFlat();
-    volActor->GetProperty()->SetAmbient(1.0);  // Ustawienie maksymalnej jasności materiału (1.0 = maksymalna jasność)
-    volActor->GetProperty()->SetDiffuse(0.2);  // Zmniejszenie odbicia rozproszonego
-    volActor->GetProperty()->SetSpecular(0.1);  // Można dodać połysk (dla efektu refleksji)
-    volActor->GetProperty()->SetSpecularPower(1.0);  // Zwiększenie refleksów świetlnych
-    volActor->GetProperty()->SetColor(colors->GetColor3d("Salmon").GetData());
 
-    renderer->AddActor(volActor);
+    volMapper->SetAutoAdjustSampleDistances(true);
+	vtkNew<vtkVolume> vol;
+    vol->SetMapper(volMapper);
+    vol->SetProperty(volProperty);
+
+    renderer->AddVolume(vol);
+
+    // Add wireframe outline
+    vtkNew<vtkOutlineFilter> outlineFilter;
+    outlineFilter->SetInputData(volPoints);
+    outlineFilter->Update();
+
+    vtkNew<vtkPolyDataMapper> outlineMapper;
+    outlineMapper->SetInputConnection(outlineFilter->GetOutputPort());
+
+    vtkNew<vtkActor> outlineActor;
+    outlineActor->SetMapper(outlineMapper);
+    outlineActor->GetProperty()->SetColor(1.0, 1.0, 1.0); // Ustaw kolor siatki na biały
+    outlineActor->GetProperty()->SetRepresentationToWireframe();
+
+    renderer->AddActor(outlineActor);
+
+    //renderer->AddActor(volActor);
+
     renderer->SetBackground(colors->GetColor3d("SlateGray").GetData());
     window->AddRenderer(renderer);
 
     
-    VolumeRenderer volRenderer(renderer, vol);
+    VolumeRenderer volRenderer(renderer, volPoints);
     vtkNew<vtkRenderWindowInteractor> interactor;
     vtkNew<MouseInteractorStyle> style;
 
@@ -426,11 +510,11 @@ int main(int argc, char* argv[])
         volRenderer.setAmplitude(amplitude);
 
         });
-    QObject::connect(&sizeCubeSlider, &QSlider::valueChanged, [&volRenderer](int value) {
+    /*QObject::connect(&sizeCubeSlider, &QSlider::valueChanged, [&volRenderer](int value) {
         float sizeCube = (value);
         volRenderer.setSizeCube(sizeCube);
 
-        });
+        });*/
     // Połączenie przycisków z funkcjami
     QObject::connect(&RotateCameraRight, &QPushButton::clicked, [&]() {
         rotateCameraRight(camera, renderer);
@@ -445,12 +529,17 @@ int main(int argc, char* argv[])
         volRenderer.isPlaying = !volRenderer.isPlaying;
         });
 
+    
     // Animacja
     QTimer timer;
     QObject::connect(&timer, &QTimer::timeout, [&volRenderer]() {
-		if (volRenderer.isPlaying)
-            volRenderer.updateTime(0.10);  
-        });
+        benchmark([&]() {
+            if (volRenderer.isPlaying)
+                volRenderer.updateTime(0.01);
+            });
+        
+     });
+		
     timer.start(16);  // 60 fps (1000 ms / 60 ≈ 16 ms na klatkę)
 
     mainWindow.show();

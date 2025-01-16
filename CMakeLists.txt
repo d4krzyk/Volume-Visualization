@@ -12,12 +12,15 @@ find_package(VTK COMPONENTS
   CommonCore
   CommonDataModel
   FiltersCore
+  FiltersPoints
   InteractionStyle
   RenderingContextOpenGL2
   RenderingCore
   RenderingFreeType
   RenderingGL2PSOpenGL2
   RenderingOpenGL2
+  RenderingVolume
+  RenderingVolumeOpenGL2
   GUISupportQt
 )
 
