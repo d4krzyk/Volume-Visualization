@@ -48,7 +48,7 @@
 #include <vtkCharArray.h>
 
 #define M_PI 3.14159265358979323846
-
+vtkNew<vtkActor> sphereActor;
 static int sizeCube = 256;
 constexpr std::size_t LOOKUP_SIZE = 4096;
 static float sp = 1.0 / float(sizeCube - 1);
@@ -60,8 +60,14 @@ float* zLookup = new float[sizeCube];
 float* yLookup = new float[sizeCube];
 float* xLookup = new float[sizeCube];
 
+float pickedPointXY[2];
+
 
 void setupLookup() {
+    pickedPointXY[0] = 0.0;
+    pickedPointXY[1] = 0.0;
+
+
     for (int i = 0; i < LOOKUP_SIZE; i++) {
         sinLookup[i] = sinf(i / float(LOOKUP_SIZE) * 2 * M_PI);
         cosLookup[i] = cosf(i / float(LOOKUP_SIZE) * 2 * M_PI);
@@ -101,7 +107,7 @@ void benchmark(std::function<void()> f) {
 	auto currentTime = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
     if (duration >= 1) {
-        std::cout << "FPS: " << int((16.0 / duration) * 100) << std::endl;
+        std::cout << "FPS: " << int( 1000/duration) << std::endl;
         start = stop;
     }
 #endif
@@ -123,9 +129,16 @@ public:
      
         std::vector<float> sinValues(sizeCube);
         std::vector<float> cosValues(sizeCube);
+        std::vector<float> extraPoint(sizeCube);
+        
+
         for (int i = 0; i < sizeCube; ++i) {
-            sinValues[i] = lightSin(i / ((sizeCube - 1) / frequencyX) + time);
-            cosValues[i] = lightCos(i / ((sizeCube - 1) / frequencyY) + time);
+            float dx = pickedPointXY[0] - lightX(i);
+            float dy = pickedPointXY[1] - lightY(i);
+            float distance = (dx * dx + dy * dy);
+            extraPoint[i] = distance;
+            sinValues[i] = lightSin(i / ((sizeCube - 1) / frequencyX) + time + distance);
+            cosValues[i] = lightCos(i / ((sizeCube - 1) / frequencyY) + time + distance);
         }
         for (int k = 0; k < sizeCube; k++) {
 			float z = lightZ(k);
@@ -136,11 +149,13 @@ public:
 					int jOffset = j * sizeCube;
 					for (int i = 0; i < sizeCube; i++) {
 						float x = lightX(i);
-                        float value = z - (sinValues[i] * cosValues[j] / ((sizeCube - 1) / amplitude));
-						//float value = z - (lightSin(i / ((sizeCube - 1) / frequencyX) + time) * lightCos(j / ((sizeCube - 1) / frequencyY ) + time) / ((sizeCube - 1) / amplitude));
-						int offset = i + jOffset + kOffset;
-                        begin[offset] = value;
-                        //scalars->InsertTuple(offset, &value);
+                        float value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude));
+                            //float value = z - (lightSin(i / ((sizeCube - 1) / frequencyX) + time) * lightCos(j / ((sizeCube - 1) / frequencyY ) + time) / ((sizeCube - 1) / amplitude));
+                            int offset = i + jOffset + kOffset;
+                            begin[offset] = value;
+                            //scalars->InsertTuple(offset, &value);
+                        
+                        
 					}
 				}
 				
@@ -190,11 +205,15 @@ public:
                 std::cout << "Picked Position: (" << pickedPosition[0] << ", "
                     << pickedPosition[1] << ", " << pickedPosition[2] << ")" << std::endl;
 
+                pickedPointXY[0] = pickedPosition[0];
+                pickedPointXY[1] = pickedPosition[1];
+                
                 //changePointScalar(pointId, 100.0); // Nowa wartość skalarna
-                increasePointHeight(pointId, -10.0);
+                //increasePointHeight(pointId, -10.0);
                 //updateVoxels();
                 //applyWarpScalar(); // Zastosuj deformację
                 // Pobierz wartość skalaru dla wybranego punktu
+
                 vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
                 if (scalars) {
                     double value = scalars->GetTuple1(pointId);
@@ -472,8 +491,17 @@ int main(int argc, char* argv[])
     outlineFilter->SetInputData(volPoints);
     outlineFilter->Update();
 
+
+    vtkNew<vtkSphereSource> sphereSource;
+    sphereSource->SetRadius(0.025);
+    sphereSource->Update();
+
+
     vtkNew<vtkPolyDataMapper> outlineMapper;
     outlineMapper->SetInputConnection(outlineFilter->GetOutputPort());
+
+
+    
 
     vtkNew<vtkActor> outlineActor;
     outlineActor->SetMapper(outlineMapper);
@@ -481,6 +509,10 @@ int main(int argc, char* argv[])
     outlineActor->GetProperty()->SetRepresentationToWireframe();
 
     renderer->AddActor(outlineActor);
+
+
+    //sphereActor->VisibilityOff();
+    
 
     //renderer->AddActor(volActor);
 
