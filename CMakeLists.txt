@@ -32,9 +32,9 @@ if (NOT VTK_FOUND)
 endif()
 
 # Znalezienie Qt (w zależności od wersji)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL Concurrent)
+find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets OpenGL Concurrent)
 
-if (NOT Qt6_FOUND)
+if (NOT Qt5_FOUND)
   message(FATAL_ERROR "Qt5 not found!")
 endif()
 
@@ -51,11 +51,11 @@ add_executable(VolumeRenderer MACOSX_BUNDLE Vol.cxx)
 
 # Powiązanie bibliotek Qt5 i VTK
 target_link_libraries(VolumeRenderer PRIVATE 
-  Qt6::Core
-  Qt6::Gui
-  Qt6::Widgets
-  Qt6::OpenGL
-  Qt6::Concurrent
+  Qt5::Core
+  Qt5::Gui
+  Qt5::Widgets
+  Qt5::OpenGL
+  Qt5::Concurrent
   ${VTK_LIBRARIES}
 )
 

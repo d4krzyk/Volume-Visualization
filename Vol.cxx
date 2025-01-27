@@ -49,7 +49,9 @@
 
 #define M_PI 3.14159265358979323846
 vtkNew<vtkActor> sphereActor;
-static int sizeCube = 256;
+//static int sizeCube = 64; // LOW QUALITY (FAST RENDER)
+static int sizeCube = 128; // MEDIUM QUALITY (MEDIUM RENDER)
+//static int sizeCube = 256; // HIGH QUALITY (LOW RENDER)
 constexpr std::size_t LOOKUP_SIZE = 4096;
 static float sp = 1.0 / float(sizeCube - 1);
 
@@ -64,8 +66,8 @@ float pickedPointXY[2];
 
 
 void setupLookup() {
-    pickedPointXY[0] = 0.0;
-    pickedPointXY[1] = 0.0;
+    pickedPointXY[0] = 0;
+    pickedPointXY[1] = 0;
 
 
     for (int i = 0; i < LOOKUP_SIZE; i++) {
@@ -117,9 +119,16 @@ void benchmark(std::function<void()> f) {
 class VolumeRenderer {
 public:
     VolumeRenderer(vtkRenderer* renderer, vtkStructuredPoints* volPoints )
-        : renderer(renderer), volPoints(volPoints), frequencyX(10.0f), frequencyY(10.0f), amplitude(10.0f) {}
+        : renderer(renderer), volPoints(volPoints), frequencyX(5.0f), frequencyY(5.0f), amplitude(5.0f) {}
 
     bool isPlaying = false;
+
+    float damping(float distance, float time, float decayRate) {
+        return exp(-decayRate * distance) * exp(-decayRate *time);
+    }
+    float gaussian(float x, float y, float sigma) {
+        return exp(-(x * x + y * y) / (2 * sigma * sigma));
+    }
 
     void updateVolume() {
         QThreadPool pool;
@@ -129,39 +138,51 @@ public:
      
         std::vector<float> sinValues(sizeCube);
         std::vector<float> cosValues(sizeCube);
-        std::vector<float> extraPoint(sizeCube);
-        
+
+        float decayRate = 2.0f; // Szybkość tłumienia zakłócenia
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float elapsedTime = std::chrono::duration<float>(currentTime - lastClickTime).count(); // Czas od ostatniego kliknięcia
 
         for (int i = 0; i < sizeCube; ++i) {
-            float dx = pickedPointXY[0] - lightX(i);
-            float dy = pickedPointXY[1] - lightY(i);
-            float distance = (dx * dx + dy * dy);
-            extraPoint[i] = distance;
-            sinValues[i] = lightSin(i / ((sizeCube - 1) / frequencyX) + time + distance);
-            cosValues[i] = lightCos(i / ((sizeCube - 1) / frequencyY) + time + distance);
+            sinValues[i] = lightSin(i / ((sizeCube - 1) / frequencyX) + time);
+            cosValues[i] = lightCos(i / ((sizeCube - 1) / frequencyY) + time);
+            
+            
         }
-        for (int k = 0; k < sizeCube; k++) {
-			float z = lightZ(k);
-            int kOffset = k * sizeCube * sizeCube;
-			pool.start([this, z, kOffset, begin, &sinValues, &cosValues]() {
-				for (int j = 0; j < sizeCube; j++) {
-					float y = lightY(j);
-					int jOffset = j * sizeCube;
-					for (int i = 0; i < sizeCube; i++) {
-						float x = lightX(i);
-                        float value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude));
-                            //float value = z - (lightSin(i / ((sizeCube - 1) / frequencyX) + time) * lightCos(j / ((sizeCube - 1) / frequencyY ) + time) / ((sizeCube - 1) / amplitude));
+
+            for (int k = 0; k < sizeCube; k++) {
+                float z = lightZ(k);
+                int kOffset = k * sizeCube * sizeCube;
+                pool.start([this, z, kOffset, begin, &sinValues, &cosValues, decayRate, elapsedTime ]() {
+                    for (int j = 0; j < sizeCube; j++) {
+                        float y = lightY(j);
+                        int jOffset = j * sizeCube;
+                        for (int i = 0; i < sizeCube; i++) {
+                            float x = lightX(i);
+                            float value = 0;
+                            if (pickedPointXY[0] == 0 || pickedPointXY[1] == 0) {
+                                value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude));
+                            } else {
+                                float dx = pickedPointXY[0] - x;
+                                float dy = pickedPointXY[1] - y;
+                                float distance = sqrt(dx * dx + dy * dy);
+                                float disturbance = 0.0f;
+                                for (int n = 1; n <= 3; ++n) { // kolejne fale
+                                    float factor = 0.10f / n;
+                                    float gaussianValue = gaussian(dx, dy, 0.05f * n);
+                                    float sinValue = sin(elapsedTime * 10.0f - distance * 10.0f * n);
+                                    float dampingValue = damping(distance, elapsedTime, decayRate);
+                                    disturbance += factor * gaussianValue * sinValue * dampingValue;
+                                }
+                                value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude))  + disturbance;
+                            }
                             int offset = i + jOffset + kOffset;
                             begin[offset] = value;
-                            //scalars->InsertTuple(offset, &value);
-                        
-                        
-					}
-				}
-				
-				});
+                        }
+                    }
+                });
         }
-        while (pool.activeThreadCount() > 0);
+        pool.waitForDone();
 
         volPoints->Modified();
         //volPoints->GetPointData()->SetScalars(scalars);
@@ -207,16 +228,18 @@ public:
 
                 pickedPointXY[0] = pickedPosition[0];
                 pickedPointXY[1] = pickedPosition[1];
-                
+                std::cout << "Amp: " << amplitude << " freqX: " << frequencyX << " freqY: " << frequencyY << std::endl;
                 //changePointScalar(pointId, 100.0); // Nowa wartość skalarna
                 //increasePointHeight(pointId, -10.0);
                 //updateVoxels();
                 //applyWarpScalar(); // Zastosuj deformację
                 // Pobierz wartość skalaru dla wybranego punktu
+                lastClickTime = std::chrono::high_resolution_clock::now(); // Resetowanie czasu ostatniego kliknięcia
 
                 vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
                 if (scalars) {
-                    double value = scalars->GetTuple1(pointId);
+                    float value = scalars->GetTuple1(pointId);
+					pickedPointScalar = value;
                     std::cout << "Scalar Value at Picked Point: " << value << std::endl;
                 }
             }
@@ -237,56 +260,7 @@ public:
             renderer->GetRenderWindow()->Render(); 
         }
     }
-    void updateVoxels() {
-        vtkNew<vtkThreshold> threshold;
-        threshold->SetInputData(volPoints);
-        threshold->SetLowerThreshold(0.55);
-        threshold->SetThresholdFunction(vtkThreshold::THRESHOLD_LOWER);
-        threshold->Update();
-
-        vtkNew<vtkDataSetMapper> mapper;
-        mapper->SetInputConnection(threshold->GetOutputPort());
-        mapper->ScalarVisibilityOn();
-        vtkNew<vtkActor> actor;
-        actor->SetMapper(mapper);
-        actor->GetProperty()->SetColor(1.0, 1.0, 1.0); // Ustaw kolor biały (lub dynamiczny)
-        actor->GetProperty()->EdgeVisibilityOn();
-        actor->GetProperty()->SetInterpolationToFlat();
-        actor->GetProperty()->SetAmbient(1.0);  // Ustawienie maksymalnej jasności materiału (1.0 = maksymalna jasność)
-        actor->GetProperty()->SetDiffuse(0.2);  // Zmniejszenie odbicia rozproszonego
-        actor->GetProperty()->SetSpecular(0.1);  // Można dodać połysk (dla efektu refleksji)
-        actor->GetProperty()->SetSpecularPower(1.0);  // Zwiększenie refleksów świetlnych
-        renderer->RemoveAllViewProps(); // Usuń poprzednie
-        renderer->AddActor(actor);
-        renderer->GetRenderWindow()->Render();
-    }
-
-    void increasePointHeight(vtkIdType pointId, double increment) {
-        vtkDataArray* scalars = volPoints->GetPointData()->GetScalars();
-        if (scalars && pointId != -1) {
-            double currentValue = scalars->GetTuple1(pointId);
-            double newValue = currentValue + increment; // Zwiększenie wysokości
-            scalars->SetTuple1(pointId, newValue);      
-            volPoints->Modified();
-            renderer->GetRenderWindow()->Render();      
-        }
-    }
-    void applyWarpScalar() {
-        vtkNew<vtkWarpScalar> warp;
-        warp->SetInputData(volPoints);
-        warp->SetScaleFactor(0.0); // Skala deformacji
-        warp->Update();
-
-        vtkNew<vtkDataSetMapper> mapper;
-        mapper->SetInputConnection(warp->GetOutputPort());
-
-        vtkNew<vtkActor> actor;
-        actor->SetMapper(mapper);
-
-        renderer->RemoveAllViewProps(); // Usuń poprzednie obiekty
-        renderer->AddActor(actor);
-        renderer->GetRenderWindow()->Render();
-    }
+    
 
 private:
     vtkRenderer* renderer;
@@ -294,7 +268,8 @@ private:
     float frequencyX;
     float frequencyY;
     float amplitude;
-	
+    float pickedPointScalar;
+    std::chrono::time_point<std::chrono::high_resolution_clock> lastClickTime; // Czas ostatniego kliknięcia
     float time; // Czas, który będzie animował falę
 };
 void rotateCameraRight(vtkNew<vtkCamera>& camera, vtkRenderer* renderer) {
@@ -329,7 +304,7 @@ public:
             volumeRenderer->pickPoint(clickPos[0], clickPos[1]);
         }
 
-        vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
+        //vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
     }
 
     void setVolumeRenderer(VolumeRenderer* renderer) {
@@ -462,8 +437,13 @@ int main(int argc, char* argv[])
     volMapper->SetInputData(volPoints);
     
     vtkNew<vtkPiecewiseFunction> opacityTransferFunction;
-    opacityTransferFunction->AddPoint(0.5, 1.0);
+    opacityTransferFunction->AddPoint(0.1, 0.9999);
+    opacityTransferFunction->AddPoint(0.3, 0.999);
+    opacityTransferFunction->AddPoint(0.45, 0.9999);
+    opacityTransferFunction->AddPoint(0.50, 1.0);
     opacityTransferFunction->AddPoint(0.51, 0.0);
+    //opacityTransferFunction->AddPoint(0.5, 1.0);
+    //opacityTransferFunction->AddPoint(0.51, 0.0);
 	vtkSmartPointer<vtkColorTransferFunction> colorTransferFunction = vtkSmartPointer<vtkColorTransferFunction>::New();
 	colorTransferFunction->AddRGBPoint(0.1, 0.45, 0.10, 0.0);
 	colorTransferFunction->AddRGBPoint(0.8, 0.2, 0.35, 0.0);
@@ -490,11 +470,6 @@ int main(int argc, char* argv[])
     vtkNew<vtkOutlineFilter> outlineFilter;
     outlineFilter->SetInputData(volPoints);
     outlineFilter->Update();
-
-
-    vtkNew<vtkSphereSource> sphereSource;
-    sphereSource->SetRadius(0.025);
-    sphereSource->Update();
 
 
     vtkNew<vtkPolyDataMapper> outlineMapper;
@@ -530,15 +505,15 @@ int main(int argc, char* argv[])
 
 	volRenderer.updateVolume();
     QObject::connect(&frequencyXSlider, &QSlider::valueChanged, [&volRenderer](int value) {
-        float frequencyX = (value / 10.0f ) + 10.0f;
+        float frequencyX = (value / 5.0f ) + 5.0f;
         volRenderer.setFrequencyX(frequencyX);
         });
     QObject::connect(&frequencyYSlider, &QSlider::valueChanged, [&volRenderer](int value) {
-        float frequencyY = (value / 10.0f) + 10.0f;  // (1-100) -> (1-50)
+        float frequencyY = (value / 5.0f) + 5.0f;  // (1-100) -> (1-50)
         volRenderer.setFrequencyY(frequencyY);
         });
     QObject::connect(&amplitudeSlider, &QSlider::valueChanged, [&volRenderer](int value) {
-        float amplitude = (value / 10.0f) + 10.0f;
+        float amplitude = (value / 5.0f) + 5.0f;
         volRenderer.setAmplitude(amplitude);
 
         });
