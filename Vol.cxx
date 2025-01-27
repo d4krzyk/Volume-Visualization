@@ -49,8 +49,8 @@
 
 #define M_PI 3.14159265358979323846
 vtkNew<vtkActor> sphereActor;
-//static int sizeCube = 64; // LOW QUALITY (FAST RENDER)
-static int sizeCube = 128; // MEDIUM QUALITY (MEDIUM RENDER)
+static int sizeCube = 64; // LOW QUALITY (FAST RENDER)
+//static int sizeCube = 128; // MEDIUM QUALITY (MEDIUM RENDER)
 //static int sizeCube = 256; // HIGH QUALITY (LOW RENDER)
 constexpr std::size_t LOOKUP_SIZE = 4096;
 static float sp = 1.0 / float(sizeCube - 1);
@@ -160,9 +160,9 @@ public:
                         for (int i = 0; i < sizeCube; i++) {
                             float x = lightX(i);
                             float value = 0;
-                            if (pickedPointXY[0] == 0 || pickedPointXY[1] == 0) {
-                                value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude));
-                            } else {
+                            
+                            value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude));
+                            
                                 float dx = pickedPointXY[0] - x;
                                 float dy = pickedPointXY[1] - y;
                                 float distance = sqrt(dx * dx + dy * dy);
@@ -172,10 +172,13 @@ public:
                                     float gaussianValue = gaussian(dx, dy, 0.05f * n);
                                     float sinValue = sin(elapsedTime * 10.0f - distance * 10.0f * n);
                                     float dampingValue = damping(distance, elapsedTime, decayRate);
+									if (dampingValue < 0.02) {
+										break;
+									}
                                     disturbance += factor * gaussianValue * sinValue * dampingValue;
                                 }
-                                value = z - ((sinValues[i] * cosValues[j]) / ((sizeCube - 1) / amplitude))  + disturbance;
-                            }
+                             value += disturbance;
+                            
                             int offset = i + jOffset + kOffset;
                             begin[offset] = value;
                         }
@@ -300,12 +303,14 @@ public:
     void OnRightButtonDown() override {
         int* clickPos = this->GetInteractor()->GetEventPosition();
 
-        if (volumeRenderer) {
+        if (volumeRenderer && clickPos) {
+			std::cout << "Picking point at: " << clickPos[0] << ", " << clickPos[1] << std::endl;
             volumeRenderer->pickPoint(clickPos[0], clickPos[1]);
         }
 
         //vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
     }
+
 
     void setVolumeRenderer(VolumeRenderer* renderer) {
         volumeRenderer = renderer;
@@ -317,6 +322,7 @@ private:
 vtkStandardNewMacro(MouseInteractorStyle);
 int main(int argc, char* argv[])
 {
+    setupLookup();
     QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 
     QApplication app(argc, argv);
@@ -329,10 +335,10 @@ int main(int argc, char* argv[])
     vtkNew<vtkOpenGLGPUVolumeRayCastMapper> volMapper;
     vtkNew<vtkVolumeProperty> volProperty;
     vtkNew<vtkRenderer> renderer;
-    setupLookup();
+    
 
     vtkNew<vtkCamera> camera;
-    camera->SetPosition(2.0, -2.0, 2.0);  // Ustawienie kamery na pozycji (0, -5, 5)
+    camera->SetPosition(2.0, -1.0, 1.5);  // Ustawienie kamery na pozycji (0, -5, 5)
     camera->SetFocalPoint(0.0, 0.0, 0.0); // Skierowanie kamery na środek sceny (0, 0, 0)
     camera->SetViewUp(0.0, 0.0, 1.0); // Określenie, który kierunek jest "górą"
     renderer->SetActiveCamera(camera);
@@ -481,6 +487,7 @@ int main(int argc, char* argv[])
     vtkNew<vtkActor> outlineActor;
     outlineActor->SetMapper(outlineMapper);
     outlineActor->GetProperty()->SetColor(1.0, 1.0, 1.0); // Ustaw kolor siatki na biały
+	outlineActor->GetProperty()->SetOpacity(0.5); 
     outlineActor->GetProperty()->SetRepresentationToWireframe();
 
     renderer->AddActor(outlineActor);
